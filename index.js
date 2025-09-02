@@ -2,58 +2,50 @@ import express from "express";
 import puppeteer from "puppeteer-core";
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-async function getDirectLink(shareUrl) {
-  let browser;
+async function getDownloadLink(shareUrl) {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium-browser"
+  });
+
+  const page = await browser.newPage();
+  await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 0 });
+
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium-browser",
-    });
+    // wait for download button
+    await page.waitForSelector("a[aria-label='Download']", { timeout: 10000 });
+    const link = await page.$eval("a[aria-label='Download']", el => el.href);
 
-    const page = await browser.newPage();
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
-    );
+    await browser.close();
 
-    await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 120000 });
-
-    // Grab JS-generated download link
-    const downloadUrl = await page.evaluate(() => {
-      const scripts = Array.from(document.querySelectorAll("script"));
-      for (let s of scripts) {
-        const match = s.innerText.match(/"downloadUrl":"(https?:\/\/[^"]+)"/);
-        if (match) return match[1].replace(/\\u0026/g, "&");
-      }
-      return null;
-    });
-
-    return downloadUrl;
+    if (link && link.startsWith("http")) {
+      return { status: "success", download_url: link };
+    } else {
+      return { status: "error", message: "Download link not found" };
+    }
   } catch (err) {
-    console.error("Error:", err);
-    return null;
-  } finally {
-    if (browser) await browser.close();
+    await browser.close();
+    return { status: "error", message: "Download link not found" };
   }
 }
 
-// API endpoint
-app.get("/api/terabox", async (req, res) => {
-  const url = req.query.url;
-  if (!url)
-    return res.status(400).json({ status: "error", message: "Missing url parameter" });
-
-  const link = await getDirectLink(url);
-  if (link) res.json({ status: "success", download_url: link });
-  else res.status(404).json({ status: "error", message: "Download link not found" });
-});
-
-// Root
 app.get("/", (req, res) => {
-  res.send(`<h2>📥 Terabox Downloader API</h2>
-            <p>Usage: <code>/api/terabox?url=TERABOX_SHARE_LINK</code></p>`);
+  res.send("📥 Terabox Downloader API<br>Usage: /api/terabox?url=TERABOX_SHARE_LINK");
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.get("/api/terabox", async (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.json({ status: "error", message: "Missing URL parameter" });
+  }
+
+  const result = await getDownloadLink(url);
+  res.json(result);
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
